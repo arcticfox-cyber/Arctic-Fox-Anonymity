@@ -1,0 +1,791 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#   █████╗ ██████╗  ██████╗████████╗██╗ ██████╗    ███████╗ ██████╗ ██╗  ██╗
+#  ██╔══██╗██╔══██╗██╔════╝╚══██╔══╝██║██╔════╝    ██╔════╝██╔═══██╗╚██╗██╔╝
+#  ███████║██████╔╝██║        ██║   ██║██║  ███╗   █████╗  ██║   ██║ ╚███╔╝
+#  ██╔══██║██╔══██╗██║        ██║   ██║██║   ██║   ██╔══╝  ██║   ██║ ██╔██╗
+#  ██║  ██║██║  ██║╚██████╗   ██║   ██║╚██████╔╝██╗██║     ╚██████╔╝██╔╝ ██╗
+#  ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝   ╚═╝   ╚═╝ ╚═════╝ ╚═╝╚═╝      ╚═════╝ ╚═╝  ╚═╝
+#
+#  Arctic Fox Anonymity  -  Transparent Tor routing for Kali Linux
+#  Redirect ALL system traffic (TCP + DNS) through the Tor network.
+#
+#  Inspired by tools like AnonGT / anonsurf, rebuilt cleaner & safer:
+#    * custom iptables chains  -> does NOT wipe your existing firewall rules
+#    * DNS (UDP+TCP 53) forced through Tor's DNSPort  (no DNS leaks)
+#    * other UDP (QUIC etc.) rejected, ICMP (ping) blocked  -> no side leaks
+#    * IPv6 output blocked while routing       -> no IPv6 leaks
+#    * automatic resolv.conf backup & restore
+#    * firewall backup saved to /var/lib/arcticfox before every start
+#
+#  FOR LEGAL / ETHICAL USE ONLY: authorized pentesting, security research
+#  and privacy on systems you own. The authors are not responsible for
+#  any misuse.
+#
+#===============================================================================
+
+VERSION="1.0.3"
+NAME="Arctic Fox Anonymity"
+
+#--- Tor ports & paths ---------------------------------------------------------
+TOR_SOCKS_PORT=9050
+TOR_TRANS_PORT=9040
+TOR_DNS_PORT=5353
+TOR_CONTROL_PORT=9051
+TOR_VIRTUAL_NET="10.192.0.0/10"
+TOR_USER="debian-tor"
+TORRC="/etc/tor/torrc"
+TORRC_MARKER="# === Arctic Fox Anonymity configuration ==="
+TORRC_END="# === End Arctic Fox Anonymity ==="
+BACKUP_DIR="/var/lib/arcticfox"
+RESOLV="/etc/resolv.conf"
+CHAIN_NAT="AF_NAT"      # nat OUTPUT chain
+CHAIN_FILT="AF_FILT"    # filter OUTPUT chain (IPv4)
+CHAIN_FILT6="AF_FILT6"  # filter OUTPUT chain (IPv6)
+
+#--- Output colors -------------------------------------------------------------
+if [ -t 1 ]; then
+    C_R=$'\e[1;31m'; C_G=$'\e[1;32m'; C_Y=$'\e[1;33m'
+    C_C=$'\e[1;36m'; C_W=$'\e[1;37m'; C_B=$'\e[2m'; C_0=$'\e[0m'
+else
+    C_R=""; C_G=""; C_Y=""; C_C=""; C_W=""; C_B=""; C_0=""
+fi
+
+ok()   { printf '%s[+]%s %s\n' "$C_G" "$C_0" "$*"; }
+err()  { printf '%s[-]%s %s\n' "$C_R" "$C_0" "$*"; }
+info() { printf '%s[*]%s %s\n'  "$C_C" "$C_0" "$*"; }
+warn() { printf '%s[!]%s %s\n'  "$C_Y" "$C_0" "$*"; }
+die()  { err "$*"; exit 1; }
+
+#--- ASCII banner (generated from the official Arctic Fox logo) ----------------
+readarray -t BANNER_LINES <<'FOXEOF'
+ ▓█▓                                                   ▓██
+  ████▓                                              █████
+  ██ ▓███▓                                       ▓████ ██▓
+  ██▓   ▓████▓                                ▓████    ██
+  ▓██       ▓████▓                        ▓████▓       ██
+   ██   █▓     ▓████▓                  ▓████▓     ▓█  ▓██
+   ██   ▓██       ▓███  ▓          ▓  ███        ██   ██▓
+   ▓█▓   ▓███        ▓█▓█████▓▓█████▓█▓        ███▓   ██
+    ██  ██████▓        ▓ ██████████ ▓        ███████  █▓
+    ▓█▓  ████▓▓█▓         █  ██  █         ▓█▓▓████  ██
+    ▓██   ████▓                              ▓████   ██▓
+    ████   ▓██▓                              ▓██▓   ███▓
+     ████  ▓▓                                  ▓▓  ████
+     ████▓                                        ▓████
+   ▓██         █▓                          ▓█         ██▓
+  ███▓▓▓        ██▓▓▓                  ▓▓▓██         ▓▓███
+      ▓██▓       █▓  ▓▓▓            ▓▓▓  ▓█       ▓██▓▓
+      ▓█████▓      ▓   ▓██        ██▓   ▓       █████▓
+      ▓▓████▓▓           █▓      ▓█           ▓▓████▓▓
+           ▓██▓           █      █           ▓██▓
+            ▓███▓ ▓▓                    ▓█ ▓███▓
+               ███████                ███████
+                 ▓█████▓            ▓█████▓
+                   ▓█████          █████▓
+                     █▓ ██  ████  ██ ▓█
+                      █  ██▓ ▓▓ ▓██  ▓
+                          ▓██████▓
+                            ████
+                             ██
+FOXEOF
+
+print_banner() {
+    local n=${#BANNER_LINES[@]} i color
+    for ((i=0; i<n; i++)); do
+        color=$(( 51 - i * 5 / (n - 1) ))   # cyan -> green gradient
+        printf '\e[38;5;%sm%s\e[0m\n' "$color" "${BANNER_LINES[$i]}"
+    done
+    printf '\n'
+    printf '     %s%s%s  %sv%s%s  %s|  All traffic through Tor  |  Kali Linux%s\n' \
+        "$C_W" "$NAME" "$C_0" "$C_G" "$VERSION" "$C_0" "$C_B" "$C_0"
+    printf '\n'
+}
+
+#--- Helpers -------------------------------------------------------------------
+require_root() {
+    [ "$(id -u)" -eq 0 ] || die "This action requires root privileges.  Run:  sudo arcticfox $1"
+}
+
+confirm() {
+    [ "$ASSUME_YES" -eq 1 ] && return 0
+    local reply
+    read -r -p "$(printf '%s[?]%s %s [y/N]: ' "$C_Y" "$C_0" "$1")" reply
+    [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+cmd_exists() { command -v "$1" >/dev/null 2>&1; }
+
+check_deps() {
+    local missing=()
+    local bin
+    for bin in tor curl iptables ip6tables; do
+        cmd_exists "$bin" || missing+=("$bin")
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        err "Missing dependencies: ${missing[*]}"
+        info "Install them with:  sudo bash install.sh   (or:  sudo apt install tor curl iptables)"
+        return 1
+    fi
+}
+
+detect_tor_user() {
+    if id "debian-tor" >/dev/null 2>&1; then
+        TOR_USER="debian-tor"
+    elif id "tor" >/dev/null 2>&1; then
+        TOR_USER="tor"
+    fi
+}
+
+tor_service_active() {
+    systemctl is-active tor >/dev/null 2>&1 && return 0
+    systemctl is-active tor@default >/dev/null 2>&1 && return 0
+    pgrep -x tor >/dev/null 2>&1
+}
+
+restart_tor_service() {
+    if systemctl restart tor 2>/dev/null; then return 0; fi
+    if systemctl restart tor@default 2>/dev/null; then return 0; fi
+    service tor restart 2>/dev/null
+}
+
+stop_tor_service() {
+    systemctl stop tor 2>/dev/null || systemctl stop tor@default 2>/dev/null \
+        || service tor stop 2>/dev/null
+    return 0
+}
+
+routing_active() {
+    if [ "$(id -u)" -eq 0 ]; then
+        iptables -t nat -C OUTPUT -j "$CHAIN_NAT" 2>/dev/null && return 0
+        return 1
+    fi
+    iptables-save -t nat 2>/dev/null | grep -q "$CHAIN_NAT"
+}
+
+dns_is_forced() {
+    grep -qs '^nameserver 127\.0\.0\.1$' "$RESOLV" && [ -f "$BACKUP_DIR/resolv.conf.bak" ]
+}
+
+#--- Tor service state (preserve whatever ran before Arctic Fox) -----------------
+save_tor_state() {
+    mkdir -p "$BACKUP_DIR"
+    if tor_service_active; then
+        echo 1 > "$BACKUP_DIR/tor_was_active"
+    else
+        echo 0 > "$BACKUP_DIR/tor_was_active"
+    fi
+}
+
+tor_was_active_before() {
+    [ -f "$BACKUP_DIR/tor_was_active" ] && [ "$(cat "$BACKUP_DIR/tor_was_active" 2>/dev/null)" = "1" ]
+}
+
+#--- DNS-path self test ----------------------------------------------------------
+# Resolves a name through the forced resolver (127.0.0.1 -> Tor DNSPort).
+dns_path_ok() {
+    getent hosts check.torproject.org >/dev/null 2>&1
+}
+
+#--- Network queries -----------------------------------------------------------
+tor_exit_ip() {
+    local json
+    json=$(curl -s --max-time 10 --socks5-hostname "127.0.0.1:$TOR_SOCKS_PORT" \
+        https://check.torproject.org/api/ip 2>/dev/null)
+    sed -n 's/.*"Ip":"\([^"]*\)".*/\1/p' <<<"$json"
+}
+
+# Public IP exactly as websites see it (goes through Tor when routing is ON)
+public_ip() {
+    local json
+    json=$(curl -s --max-time 12 https://check.torproject.org/api/ip 2>/dev/null)
+    printf '%s|%s' \
+        "$(sed -n 's/.*"Ip":"\([^"]*\)".*/\1/p' <<<"$json")" \
+        "$(sed -n 's/.*"IsTor":\([a-z]*\).*/\1/p' <<<"$json")"
+}
+
+show_public_summary() {
+    local data ip istor word
+    data=$(public_ip)
+    ip="${data%%|*}"; istor="${data##*|}"
+    if [ -n "$ip" ]; then
+        if [ "$istor" = "true" ]; then word="${C_G}YES - behind Tor${C_0}"; else word="${C_Y}NO - direct connection${C_0}"; fi
+        printf '     %-24s %s%s%s   (Tor: %b)\n' "Public IP:" "$C_W" "$ip" "$C_0" "$word"
+    else
+        warn "Could not fetch public IP (no internet?)"
+    fi
+}
+
+#--- Tor configuration (torrc) -------------------------------------------------
+# Port directives that conflict with ours (outside our marked block)
+torrc_conflict_pattern() {
+    printf '%s' '^[[:space:]]*(SocksPort|TransPort|DNSPort|ControlPort)([[:space:]]|$)'
+}
+
+validate_torrc() {
+    cmd_exists tor || return 0
+    local out args=(--verify-config -f "$TORRC")
+    # Validate exactly like the Debian/Kali systemd unit runs it
+    if [ -f /usr/share/tor/tor-service-defaults-torrc ]; then
+        args=(--verify-config --defaults-torrc /usr/share/tor/tor-service-defaults-torrc -f "$TORRC")
+    fi
+    if ! out=$(tor "${args[@]}" 2>&1); then
+        err "Tor configuration validation failed:"
+        printf '%s\n' "$out" | tail -n 5 | sed 's/^/       /'
+        return 1
+    fi
+    return 0
+}
+
+ensure_torrc() {
+    local TOR_DEFAULTS="/usr/share/tor/tor-service-defaults-torrc"
+
+    if grep -qs "$TORRC_MARKER" "$TORRC"; then
+        ok "Tor configuration already present in $TORRC"
+        # One-time migration: drop our SocksPort if the system defaults already
+        # provide one on the same port (duplicate listener = Tor refuses to start)
+        if [ -f "$TOR_DEFAULTS" ] \
+            && grep -qs '^[[:space:]]*SocksPort[[:space:]]\+9050\b' "$TOR_DEFAULTS" \
+            && sed -n "/$TORRC_MARKER/,/$TORRC_END/p" "$TORRC" | grep -qs '^[[:space:]]*SocksPort[[:space:]]\+9050\b'; then
+            sed -i "/$TORRC_MARKER/,/$TORRC_END/s/^[[:space:]]*SocksPort[[:space:]]\+9050[[:space:]]*$/# SocksPort removed by Arctic Fox: already provided by tor-service-defaults/" "$TORRC"
+            warn "Removed duplicate SocksPort 9050 from the Arctic Fox block (already in tor-service-defaults)"
+        fi
+        return 0
+    fi
+    mkdir -p "$BACKUP_DIR"
+    cp -f "$TORRC" "$BACKUP_DIR/torrc.original.bak" 2>/dev/null
+
+    # Comment out conflicting port directives that live OUTSIDE our block
+    local conflicts
+    conflicts=$(awk -v m="$TORRC_MARKER" -v e="$TORRC_END" -v pat="$(torrc_conflict_pattern)" '
+        index($0, m) { inblk=1; print; next }
+        index($0, e) { inblk=0; print; next }
+        !inblk && $0 ~ pat { print "# disabled by Arctic Fox (port conflict): " $0; next }
+        { print }
+    ' "$TORRC" 2>/dev/null)
+    if [ -n "$conflicts" ] && [ "$(grep -c 'disabled by Arctic Fox' <<<"$conflicts" 2>/dev/null || echo 0)" -gt 0 ]; then
+        printf '%s\n' "$conflicts" > "$TORRC"
+        warn "Commented out conflicting port directives already present in $TORRC"
+    fi
+
+    # Do NOT add SocksPort when the Debian defaults file already provides one
+    local add_socks=1
+    if [ -f "$TOR_DEFAULTS" ] && grep -qs '^[[:space:]]*SocksPort' "$TOR_DEFAULTS"; then
+        add_socks=0
+    fi
+
+    {
+        echo ""
+        echo "$TORRC_MARKER"
+        [ "$add_socks" -eq 1 ] && echo "SocksPort $TOR_SOCKS_PORT"
+        echo "TransPort $TOR_TRANS_PORT"
+        echo "DNSPort $TOR_DNS_PORT"
+        echo "ControlPort $TOR_CONTROL_PORT"
+        echo "CookieAuthentication 1"
+        echo "VirtualAddrNetworkIPv4 $TOR_VIRTUAL_NET"
+        echo "AutomapHostsOnResolve 1"
+        echo "ClientOnly 1"
+        echo "SafeLogging 1"
+        echo "$TORRC_END"
+    } >> "$TORRC"
+    ok "Tor transparent-proxy configuration written to $TORRC"
+
+    if ! validate_torrc; then
+        if [ -f "$BACKUP_DIR/torrc.original.bak" ]; then
+            cp -f "$BACKUP_DIR/torrc.original.bak" "$TORRC"
+            warn "Original torrc restored - fix the conflict above and run 'sudo arcticfox start' again."
+        fi
+        return 1
+    fi
+    ok "Tor configuration validated OK"
+}
+
+#--- Firewall (iptables) -------------------------------------------------------
+backup_firewall() {
+    mkdir -p "$BACKUP_DIR"
+    iptables-save  > "$BACKUP_DIR/iptables.v4.bak" 2>/dev/null
+    ip6tables-save > "$BACKUP_DIR/iptables.v6.bak" 2>/dev/null
+}
+
+apply_rules() {
+    detect_tor_user
+
+    # Every firewall command is individually checked - one failure marks the
+    # whole run failed and the caller rolls everything back.
+    local rc=0
+    run() { "$@" 2>/dev/null || { err "Firewall command failed: $*"; rc=1; }; }
+
+    # IPv4 - NAT (transparent proxy)
+    iptables -t nat -N "$CHAIN_NAT" 2>/dev/null
+    run iptables -t nat -F "$CHAIN_NAT"
+
+    # Order matters:
+    #   1) Tor's own traffic goes out untouched (prevents an infinite loop)
+    #   2) DNS to the local resolver (127.0.0.1:53 - set by set_dns) MUST be
+    #      redirected BEFORE the 127.0.0.0/8 exemption, otherwise those packets
+    #      escape the chain and DNS breaks (nothing listens on port 53).
+    #   3) loopback / LAN ranges stay direct
+    #   4) remaining UDP / TCP rules
+    run iptables -t nat -A "$CHAIN_NAT" -m owner --uid-owner "$TOR_USER" -j RETURN
+    # Local resolver -> Tor DNSPort (before the loopback exemption!)
+    run iptables -t nat -A "$CHAIN_NAT" -p udp -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+    run iptables -t nat -A "$CHAIN_NAT" -p tcp -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+    run iptables -t nat -A "$CHAIN_NAT" -d 127.0.0.0/8        -j RETURN
+    run iptables -t nat -A "$CHAIN_NAT" -d 10.0.0.0/8         -j RETURN
+    run iptables -t nat -A "$CHAIN_NAT" -d 172.16.0.0/12      -j RETURN
+    run iptables -t nat -A "$CHAIN_NAT" -d 192.168.0.0/16     -j RETURN
+    run iptables -t nat -A "$CHAIN_NAT" -d 169.254.0.0/16     -j RETURN
+    run iptables -t nat -A "$CHAIN_NAT" -d "$TOR_VIRTUAL_NET" -j RETURN
+    # DNS aimed at other servers (8.8.8.8 etc.) -> Tor DNSPort too
+    run iptables -t nat -A "$CHAIN_NAT" -p udp --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+    run iptables -t nat -A "$CHAIN_NAT" -p tcp --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+    # Kill all other UDP (QUIC / HTTP3 / WebRTC-style leaks)
+    run iptables -t nat -A "$CHAIN_NAT" -p udp -j REJECT
+    # Everything else (TCP) -> Tor TransPort
+    run iptables -t nat -A "$CHAIN_NAT" -p tcp -j REDIRECT --to-ports "$TOR_TRANS_PORT"
+    if ! iptables -t nat -C OUTPUT -j "$CHAIN_NAT" 2>/dev/null; then
+        run iptables -t nat -I OUTPUT 1 -j "$CHAIN_NAT"
+    fi
+
+    # IPv4 - filter (block ICMP so ping cannot reveal destinations)
+    iptables -N "$CHAIN_FILT" 2>/dev/null
+    run iptables -F "$CHAIN_FILT"
+    run iptables -A "$CHAIN_FILT" -m owner --uid-owner "$TOR_USER" -j ACCEPT
+    run iptables -A "$CHAIN_FILT" -o lo -j ACCEPT
+    run iptables -A "$CHAIN_FILT" -p icmp -j REJECT
+    if ! iptables -C OUTPUT -j "$CHAIN_FILT" 2>/dev/null; then
+        run iptables -I OUTPUT 1 -j "$CHAIN_FILT"
+    fi
+
+    # IPv6 - lock the door (Tor routing here is IPv4 based)
+    if cmd_exists ip6tables; then
+        ip6tables -N "$CHAIN_FILT6" 2>/dev/null
+        run ip6tables -F "$CHAIN_FILT6"
+        run ip6tables -A "$CHAIN_FILT6" -o lo -j ACCEPT
+        run ip6tables -A "$CHAIN_FILT6" -j REJECT --reject-with icmp6-port-unreachable
+        if ! ip6tables -C OUTPUT -j "$CHAIN_FILT6" 2>/dev/null; then
+            run ip6tables -I OUTPUT 1 -j "$CHAIN_FILT6"
+        fi
+    fi
+
+    return "$rc"
+}
+
+remove_rules() {
+    iptables -t nat -D OUTPUT -j "$CHAIN_NAT"   2>/dev/null
+    iptables -t nat -F "$CHAIN_NAT"             2>/dev/null
+    iptables -t nat -X "$CHAIN_NAT"             2>/dev/null
+    iptables -D OUTPUT -j "$CHAIN_FILT"         2>/dev/null
+    iptables -F "$CHAIN_FILT"                   2>/dev/null
+    iptables -X "$CHAIN_FILT"                   2>/dev/null
+    if cmd_exists ip6tables; then
+        ip6tables -D OUTPUT -j "$CHAIN_FILT6"   2>/dev/null
+        ip6tables -F "$CHAIN_FILT6"             2>/dev/null
+        ip6tables -X "$CHAIN_FILT6"             2>/dev/null
+    fi
+}
+
+#--- DNS (resolv.conf) ---------------------------------------------------------
+set_dns() {
+    mkdir -p "$BACKUP_DIR"
+    if [ -L "$RESOLV" ]; then
+        readlink "$RESOLV" > "$BACKUP_DIR/resolv.conf.link"
+    fi
+    cp -L "$RESOLV" "$BACKUP_DIR/resolv.conf.bak" 2>/dev/null
+    if [ -L "$RESOLV" ]; then
+        rm -f "$RESOLV"
+    fi
+    printf 'nameserver 127.0.0.1\noptions timeout:2 attempts:3\n' > "$RESOLV"
+}
+
+restore_dns() {
+    if [ -f "$BACKUP_DIR/resolv.conf.link" ]; then
+        rm -f "$RESOLV"
+        ln -s "$(cat "$BACKUP_DIR/resolv.conf.link")" "$RESOLV"
+        rm -f "$BACKUP_DIR/resolv.conf.link"
+        ok "resolv.conf symlink restored"
+    elif [ -f "$BACKUP_DIR/resolv.conf.bak" ]; then
+        cp -f "$BACKUP_DIR/resolv.conf.bak" "$RESOLV"
+        ok "resolv.conf restored"
+    fi
+}
+
+#--- Tor bootstrap wait --------------------------------------------------------
+wait_for_tor() {
+    local i json
+    printf '   %s[*]%s Waiting for Tor to build a circuit ' "$C_C" "$C_0"
+    for i in $(seq 1 45); do
+        json=$(curl -s --max-time 4 --socks5-hostname "127.0.0.1:$TOR_SOCKS_PORT" \
+            https://check.torproject.org/api/ip 2>/dev/null)
+        if grep -q '"IsTor":true' <<<"$json"; then
+            echo ""
+            return 0
+        fi
+        printf '.'
+        sleep 1
+    done
+    echo ""
+    return 1
+}
+
+#--- Tor identity change (NEWNYM) ----------------------------------------------
+tor_signal_newnym() {
+    local cookie_file hex resp
+    cookie_file=""
+    for cf in /run/tor/control.authcookie /var/run/tor/control.authcookie; do
+        [ -r "$cf" ] && { cookie_file="$cf"; break; }
+    done
+    [ -n "$cookie_file" ] || return 1
+    hex=$(xxd -p "$cookie_file" 2>/dev/null | tr -d '\n')
+    [ -n "$hex" ] || hex=$(od -An -tx1 "$cookie_file" 2>/dev/null | tr -d ' \n')
+    [ -n "$hex" ] || return 1
+
+    if ! exec 3<>/dev/tcp/127.0.0.1/"$TOR_CONTROL_PORT"; then
+        return 1
+    fi
+    printf 'AUTHENTICATE %s\r\nSIGNAL NEWNYM\r\nQUIT\r\n' "$hex" >&3
+    local r1 r2
+    IFS= read -r -t 5 r1 <&3 || { exec 3<&- 3>&-; return 1; }   # AUTHENTICATE reply
+    IFS= read -r -t 5 r2 <&3 || { exec 3<&- 3>&-; return 1; }   # SIGNAL NEWNYM reply
+    exec 3<&- 3>&-
+    [[ "$r1" == 250* && "$r2" == 250* ]]
+}
+
+#--- Actions --------------------------------------------------------------------
+do_start() {
+    require_root "start"
+    print_banner
+    if routing_active; then
+        warn "Arctic Fox is already ACTIVE.  Nothing to do.  (status: arcticfox status)"
+        return 0
+    fi
+    check_deps || return 1
+    confirm "Route ALL traffic through Tor? (connections will reset briefly)" || { info "Cancelled."; return 1; }
+
+    save_tor_state   # remember whether Tor ran before, so stop/recover can restore it
+
+    info "Step 1/5  Configuring Tor (transparent proxy + DNS)..."
+    ensure_torrc || return 1
+
+    info "Step 2/5  Restarting the Tor service..."
+    restart_tor_service || die "Could not restart the Tor service. Try: systemctl start tor"
+
+    info "Step 3/5  Bootstrapping Tor..."
+    if ! wait_for_tor; then
+        tor_was_active_before || stop_tor_service
+        die "Tor failed to build a circuit in time.  Check your internet connection, or try again."
+    fi
+
+    info "Step 4/5  Applying firewall rules (backup saved to $BACKUP_DIR)..."
+    backup_firewall
+    apply_rules || { remove_rules; restore_dns; die "Failed to apply firewall rules - everything rolled back."; }
+
+    info "Step 5/5  Forcing system DNS through Tor..."
+    set_dns || { remove_rules; restore_dns; die "Failed to set system DNS - everything rolled back."; }
+    if dns_path_ok; then
+        ok "DNS test passed (resolver answers through Tor)."
+    else
+        warn "DNS test failed - resolver did not answer yet.  Check: sudo arcticfox status"
+    fi
+
+    local ip
+    ip=$(tor_exit_ip)
+    ip="${ip:0:34}"   # keep long (IPv6) addresses from breaking the box
+    local dashes border
+    printf -v dashes '%.0s-' {1..54}
+    border="  +${dashes}+"
+    echo ""
+    printf '%s%s%s\n' "$C_G" "$border" "$C_0"
+    printf '  |  %s%-51s%s |\n' "$C_W" "ARCTIC FOX ANONYMITY - ACTIVE" "$C_0"
+    printf '  |  %-51s |\n' "Tor exit IP : ${ip:-building...}"
+    printf '  |  %-51s |\n' "DNS         : routed through Tor (127.0.0.1)"
+    printf '  |  %-51s |\n' "IPv6        : blocked (leak protection)"
+    printf '  |  %-51s |\n' "Ping (ICMP) : blocked (cannot be proxied)"
+    printf '%s%s%s\n' "$C_G" "$border" "$C_0"
+    echo ""
+    ok "All traffic is now going through the Tor network."
+    info "Verify:  arcticfox status   |   Stop it:  arcticfox stop"
+}
+
+do_stop() {
+    require_root "stop"
+    print_banner
+    if ! routing_active && ! dns_is_forced; then
+        warn "Arctic Fox is not active.  Nothing to do."
+        return 0
+    fi
+    confirm "Stop anonymous routing and restore normal internet?" || { info "Cancelled."; return 1; }
+
+    info "Removing firewall rules..."
+    remove_rules
+    info "Restoring DNS settings..."
+    restore_dns
+    if tor_was_active_before; then
+        info "Tor was already running before Arctic Fox - leaving the Tor service ON."
+    else
+        info "Stopping the Tor service..."
+        stop_tor_service
+    fi
+    rm -f "$BACKUP_DIR/tor_was_active"
+    echo ""
+    ok "Arctic Fox stopped - normal internet restored."
+    show_public_summary
+}
+
+# start without re-printing banner / re-asking (used by restart)
+do_start_inner() {
+    check_deps || return 1
+    info "Configuring Tor (transparent proxy + DNS)..."
+    ensure_torrc || return 1
+    info "Restarting the Tor service..."
+    restart_tor_service || die "Could not restart the Tor service."
+    info "Bootstrapping Tor..."
+    if ! wait_for_tor; then
+        tor_was_active_before || stop_tor_service
+        die "Tor failed to build a circuit in time.  Check your internet connection, or try again."
+    fi
+    info "Applying firewall rules..."
+    backup_firewall
+    apply_rules || { remove_rules; restore_dns; die "Failed to apply firewall rules - everything rolled back."; }
+    info "Forcing system DNS through Tor..."
+    set_dns || { remove_rules; restore_dns; die "Failed to set system DNS - rolled back."; }
+    local ip
+    ip=$(tor_exit_ip)
+    echo ""
+    ok "Arctic Fox restarted - all traffic through Tor.  Exit IP: ${ip:-building...}"
+}
+
+do_restart() {
+    require_root "restart"
+    print_banner
+    confirm "Restart Arctic Fox (new Tor circuit + fresh rules)?" || { info "Cancelled."; return 1; }
+    local ASSUME_YES=1
+    if routing_active || dns_is_forced; then
+        info "Tearing down current routing..."
+        remove_rules; restore_dns   # Tor service is kept - it is restarted below
+    fi
+    do_start_inner
+}
+
+do_status() {
+    print_banner
+    local is_root=0
+    [ "$(id -u)" -eq 0 ] && is_root=1
+
+    local tor_state="${C_R}inactive${C_0}"
+    tor_service_active && tor_state="${C_G}running${C_0}"
+    printf '     %-24s %b\n' "Tor service:" "$tor_state"
+
+    local routing="${C_R}OFF${C_0}  (direct connection)"
+    if [ "$is_root" -eq 1 ] && (routing_active || dns_is_forced); then
+        routing="${C_G}ON${C_0}   (all traffic through Tor)"
+    elif [ "$is_root" -eq 0 ] && dns_is_forced; then
+        routing="${C_Y}ON (partial - run with sudo for full checks)${C_0}"
+    fi
+    printf '     %-24s %b\n' "Traffic routing:" "$routing"
+
+    if [ "$is_root" -eq 1 ] && (routing_active || dns_is_forced); then
+        echo ""
+        printf '     %s\n' "Protection components:"
+        local comp_fail=0
+        comp() {
+            local label="$1"; shift
+            if "$@" >/dev/null 2>&1; then
+                printf '       %-32s %b\n' "$label" "${C_G}OK${C_0}"
+            else
+                printf '       %-32s %b\n' "$label" "${C_R}FAILED${C_0}"
+                comp_fail=1
+            fi
+        }
+        comp "NAT chain + OUTPUT jump"       iptables -t nat -C OUTPUT -j "$CHAIN_NAT"
+        comp "TCP -> TransPort redirect"     iptables -t nat -C "$CHAIN_NAT" -p tcp -j REDIRECT --to-ports "$TOR_TRANS_PORT"
+        comp "DNS redirect (UDP 127.0.0.1)"  iptables -t nat -C "$CHAIN_NAT" -p udp -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+        comp "DNS redirect (TCP 127.0.0.1)"  iptables -t nat -C "$CHAIN_NAT" -p tcp -d 127.0.0.1 --dport 53 -j REDIRECT --to-ports "$TOR_DNS_PORT"
+        comp "ICMP (ping) blocked"           iptables -C OUTPUT -j "$CHAIN_FILT"
+        if cmd_exists ip6tables; then
+            comp "IPv6 output blocked"       ip6tables -C OUTPUT -j "$CHAIN_FILT6"
+        fi
+        comp "System DNS forced (resolv.conf)" grep -qs '^nameserver 127\.0\.0\.1$' "$RESOLV"
+        comp "DNS resolution works"          dns_path_ok
+        if [ "$comp_fail" -eq 0 ]; then
+            printf '       %b\n' "${C_G}All protection components verified.${C_0}"
+        else
+            printf '       %b\n' "${C_Y}Some components FAILED - try: sudo arcticfox recover${C_0}"
+        fi
+    fi
+
+    if [ "$is_root" -eq 0 ]; then
+        warn "Some checks need root - limited status shown.  Try: sudo arcticfox status"
+    fi
+
+    echo ""
+    printf '     %-24s\n' "Network check:"
+    show_public_summary
+    local tip
+    tip=$(tor_exit_ip)
+    if [ -n "$tip" ]; then
+        printf '     %-24s %s%s%s\n' "Tor SOCKS IP:" "$C_W" "$tip" "$C_0"
+    fi
+    echo ""
+}
+
+do_showip() {
+    print_banner
+    show_public_summary
+    local tip
+    tip=$(tor_exit_ip)
+    if [ -n "$tip" ]; then
+        printf '     %-24s %s%s%s\n' "Tor SOCKS IP:" "$C_W" "$tip" "$C_0"
+    else
+        printf '     %-24s %snot reachable%s\n' "Tor SOCKS IP:" "$C_Y" "$C_0"
+    fi
+    echo ""
+}
+
+do_changeip() {
+    require_root "changeip"
+    print_banner
+    tor_service_active || die "Tor is not running.  Start it first:  sudo arcticfox start"
+    local old new
+    old=$(tor_exit_ip)
+    info "Current Tor exit IP: ${old:-unknown}"
+    info "Requesting a new Tor circuit (NEWNYM)..."
+    if ! tor_signal_newnym; then
+        die "Could not signal Tor on port $TOR_CONTROL_PORT.  Is ControlPort enabled?  (reinstall: sudo bash install.sh)"
+    fi
+    printf '   %s[*]%s Waiting for the new circuit to build ' "$C_C" "$C_0"
+    local i
+    for i in 1 2 3 4 5 6; do printf '.'; sleep 1; done
+    echo ""
+    new=$(tor_exit_ip)
+    if [ -n "$new" ] && [ "$new" = "$old" ]; then
+        warn "Exit IP is still $new - circuits rotate gradually, try again in a few seconds."
+    else
+        ok "Tor identity changed!   ${old:-unknown}  ->  ${new:-building...}"
+    fi
+}
+
+#--- Emergency repair -------------------------------------------------------------
+do_recover() {
+    require_root "recover"
+    print_banner
+    confirm "Force-restore network now (remove routing rules + DNS + Tor state)?" || { info "Cancelled."; return 1; }
+    info "Removing Arctic Fox firewall rules..."
+    remove_rules
+    info "Restoring DNS settings..."
+    restore_dns
+    info "Restoring Tor service state..."
+    if tor_was_active_before; then
+        restart_tor_service || true
+        ok "Tor service restarted (it was running before Arctic Fox)."
+    else
+        stop_tor_service
+        ok "Tor service stopped."
+    fi
+    rm -f "$BACKUP_DIR/tor_was_active"
+    echo ""
+    ok "Network restored.  If anything still feels off, reboot once."
+    show_public_summary
+}
+
+#--- Menu -----------------------------------------------------------------------
+pause_enter() { read -r -p "$(printf '\n%sPress Enter to continue...%s' "$C_B" "$C_0")" _; }
+
+do_menu() {
+    local choice
+    while true; do
+        clear
+        print_banner
+        printf '   %s1)%s  Start anonymous routing (all traffic -> Tor)\n' "$C_G" "$C_0"
+        printf '   %s2)%s  Stop anonymous routing (restore normal internet)\n' "$C_G" "$C_0"
+        printf '   %s3)%s  Restart with a fresh Tor circuit\n' "$C_G" "$C_0"
+        printf '   %s4)%s  Status\n' "$C_G" "$C_0"
+        printf '   %s5)%s  Change Tor identity / IP (NEWNYM)\n' "$C_G" "$C_0"
+        printf '   %s6)%s  Show my IP\n' "$C_G" "$C_0"
+        printf '   %s7)%s  Help (commands)\n' "$C_G" "$C_0"
+        printf '   %s8)%s  Repair: force-restore network (emergency)\n' "$C_Y" "$C_0"
+        printf '   %s0)%s  Exit\n' "$C_G" "$C_0"
+        echo ""
+        read -r -p "$(printf '   %sSelect an option [0-8]:%s ' "$C_Y" "$C_0")" choice
+        case "$choice" in
+            1) do_start;        pause_enter ;;
+            2) do_stop;         pause_enter ;;
+            3) do_restart;      pause_enter ;;
+            4) do_status;       pause_enter ;;
+            5) do_changeip;     pause_enter ;;
+            6) do_showip;       pause_enter ;;
+            7) usage;           pause_enter ;;
+            8) do_recover;      pause_enter ;;
+            0|q|Q) clear; exit 0 ;;
+            *) ;;
+        esac
+    done
+}
+
+#--- Usage ----------------------------------------------------------------------
+usage() {
+    printf '%s' "$C_C"
+    cat <<'USAGE'
+   +------------------------------------------------------------------+
+   |                  ARCTIC FOX ANONYMITY - COMMANDS                 |
+   +------------------------------------------------------------------+
+USAGE
+    printf '%s' "$C_0"
+    printf '   %sarcticfox start%s      Route ALL traffic (TCP + DNS) through Tor\n' "$C_G" "$C_0"
+    printf '   %sarcticfox stop%s       Stop routing, restore normal internet\n' "$C_G" "$C_0"
+    printf '   %sarcticfox restart%s    Restart with a fresh Tor circuit\n' "$C_G" "$C_0"
+    printf '   %sarcticfox status%s     Show Tor, routing, DNS, IPv6 and IP status\n' "$C_G" "$C_0"
+    printf '   %sarcticfox recover%s    Emergency repair: restore DNS + firewall + Tor state\n' "$C_Y" "$C_0"
+    printf '   %sarcticfox changeip%s   Ask Tor for a new identity (NEWNYM)\n' "$C_G" "$C_0"
+    printf '   %sarcticfox ip%s         Show the IP websites see right now\n' "$C_G" "$C_0"
+    printf '   %sarcticfox menu%s       Interactive menu (default when no command given)\n' "$C_G" "$C_0"
+    printf '   %sarcticfox banner%s     Show the Arctic Fox banner\n' "$C_G" "$C_0"
+    printf '   %sarcticfox version%s    Print version\n' "$C_G" "$C_0"
+    printf '\n'
+    printf '   %sFlags:%s   %s-y, --yes%s   skip confirmation prompts (for scripts)\n' "$C_Y" "$C_0" "$C_W" "$C_0"
+    printf '\n'
+    printf '   %sExamples:%s\n' "$C_Y" "$C_0"
+    printf '      sudo arcticfox start\n'
+    printf '      sudo arcticfox -y stop\n'
+    printf '      sudo arcticfox changeip\n'
+    printf '\n'
+    printf '   %sNote:%s ICMP (ping) and non-DNS UDP are blocked while routing:\n' "$C_Y" "$C_0"
+    printf '   they cannot be proxied through Tor and would leak information.\n'
+    printf '\n'
+}
+
+version_out() {
+    printf '%s v%s%s\n' "$NAME" "$VERSION" "$C_0"
+}
+
+#--- Main -----------------------------------------------------------------------
+ASSUME_YES=0
+ARGS=()
+for a in "$@"; do
+    case "$a" in
+        -y|--yes) ASSUME_YES=1 ;;
+        *) ARGS+=("$a") ;;
+    esac
+done
+
+CMD="${ARGS[0]:-menu}"
+case "$CMD" in
+    start)        do_start ;;
+    stop)         do_stop ;;
+    restart)      do_restart ;;
+    status)       do_status ;;
+    recover)      do_recover ;;
+    ip|myip)      do_showip ;;
+    changeip|newnym) do_changeip ;;
+    menu)         do_menu ;;
+    banner)       print_banner ;;
+    help|-h|--help) print_banner; usage ;;
+    version|--version|-v) version_out ;;
+    *)
+        err "Unknown command: $CMD"
+        echo ""
+        usage
+        exit 1
+        ;;
+esac

@@ -1,0 +1,17 @@
+# Bash completion for Arctic Fox Anonymity (arcticfox)
+_arcticfox_completions() {
+    local cur="${COMPREPLY[*]:-$1}"
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    COMPREPLY=()
+
+    local commands="start stop restart status recover changeip ip menu banner help version"
+    local flags="--yes -y --help -h --version"
+
+    case "$prev" in
+        arcticfox)
+            COMPREPLY=($(compgen -W "$commands $flags" -- "${COMP_WORDS[COMP_CWORD]}"))
+            ;;
+    esac
+    return 0
+}
+complete -F _arcticfox_completions arcticfox
