@@ -4,7 +4,7 @@
 
 **Transparent Tor Routing Toolkit for Kali Linux**
 
-`v1.0.2` · Bash · Tor · iptables
+`v1.0.3` · Bash · Tor · iptables
 
 </div>
 
