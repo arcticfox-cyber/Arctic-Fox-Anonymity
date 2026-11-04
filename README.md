@@ -200,7 +200,7 @@ Run the following command from the actual project directory (`Arctic-Fox-Anonymi
 sudo bash uninstall.sh
 ```
 
-The uninstaller stops active routing, removes the Arctic Fox command and cleans up its configuration and backup directory.
+The uninstaller stops active routing, removes the Arctic Fox command and cleans up its configuration. Recovery backups in `/var/lib/arcticfox` are kept by default; the uninstaller asks before deleting them. To delete backups without a prompt, run `sudo bash uninstall.sh --purge`.
 
 To remove Tor separately if you no longer need it:
 
