@@ -67,7 +67,7 @@ The installer installs the required dependencies, including Tor, curl and iptabl
 4. Open a terminal in the extracted folder.
 
 ```bash
-cd ~/Downloads/Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
+cd ~/Downloads/Arctic-Fox-Anonymity-main/Arctic-Fox-Anonymity
 
 # Install
 sudo bash install.sh
