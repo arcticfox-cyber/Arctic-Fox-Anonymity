@@ -194,10 +194,9 @@ sudo journalctl -u tor --no-pager -n 50
 
 ## 🔄 Update
 
-To download the latest repository version:
+From the repository's top-level directory (`Arctic-Fox-Anonymity`), run:
 
 ```bash
-cd Arctic-Fox-Anonymity
 git pull origin main
 cd Arctic-Fox-Anonymity
 sudo bash install.sh
