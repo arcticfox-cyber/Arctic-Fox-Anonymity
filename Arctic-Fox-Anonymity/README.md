@@ -48,19 +48,24 @@ update checks — everything goes through Tor automatically.
 
 ```bash
 git clone https://github.com/arcticfox-cyber/Arctic-Fox-Anonymity.git
-cd Arctic-Fox-Anonymity
+cd Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
 sudo bash install.sh
 ```
 
 That's it. The `arcticfox` command now works from **any terminal**, just like a native Kali tool.
 
-### Option 2 — single-file installer (no git needed)
+### Option 2 — Download ZIP (no Git needed)
 
-Download `arcticfox_installer.sh` from [Releases](https://github.com/arcticfox-cyber/Arctic-Fox-Anonymity/releases), then:
+1. Open the [Arctic-Fox-Anonymity repository](https://github.com/arcticfox-cyber/Arctic-Fox-Anonymity).
+2. Select **Code → Download ZIP** and extract the archive.
+3. Run the installer from the nested project directory:
 
 ```bash
-bash arcticfox_installer.sh
+cd ~/Downloads/Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
+sudo bash install.sh
 ```
+
+Adjust the `cd` path if you extracted the ZIP somewhere else. A standalone `arcticfox_installer.sh` is not currently published in this repository or its GitHub releases.
 
 > Old unrelated `arcticfox` tool on your system? Run `sudo bash fix_arcticfox.sh` —
 > it removes the conflict and verifies the install in one shot.
