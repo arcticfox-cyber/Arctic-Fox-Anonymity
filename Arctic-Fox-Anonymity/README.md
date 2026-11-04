@@ -61,7 +61,7 @@ That's it. The `arcticfox` command now works from **any terminal**, just like a 
 3. Run the installer from the nested project directory:
 
 ```bash
-cd ~/Downloads/Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
+cd ~/Downloads/Arctic-Fox-Anonymity-main/Arctic-Fox-Anonymity
 sudo bash install.sh
 ```
 
