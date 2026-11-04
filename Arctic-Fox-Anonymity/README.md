@@ -40,7 +40,7 @@ update checks — everything goes through Tor automatically.
 | 💾 **Auto backup & restore** | `resolv.conf` and firewall snapshots saved to `/var/lib/arcticfox` and restored on stop |
 | 🔄 **Identity change** | `arcticfox changeip` requests a fresh Tor circuit (NEWNYM) |
 | 🎛️ **Menu + CLI flags** | Interactive menu (like AnonGT) *and* proper `start/stop/status` commands |
-| 📦 **Clean install/uninstall** | `install.sh` puts the tool in `/usr/local/bin` with bash completion; `uninstall.sh` removes everything |
+| 📦 **Clean install/uninstall** | `install.sh` puts the tool in `/usr/local/bin` with bash completion; `uninstall.sh` removes the installed tool and asks before deleting recovery backups |
 
 ## 🚀 Install (Kali Linux)
 
@@ -167,7 +167,9 @@ Arctic-Fox-Anonymity/
 ## 🗑️ Uninstall
 
 ```bash
-sudo bash uninstall.sh     # from the repo folder — removes everything cleanly
+sudo bash uninstall.sh     # from the project folder — removes the tool; keeps backups unless you confirm deletion
+# To remove recovery backups without a prompt:
+sudo bash uninstall.sh --purge
 ```
 
 ## 🇵🇰 Roman Urdu — Quick Start
