@@ -77,17 +77,7 @@ sudo bash install.sh
 
 ### Method 3 — Single-File Installer
 
-If you have downloaded `arcticfox_installer.sh`, run:
-
-```bash
-# Go to the directory containing the installer
-cd ~/Downloads
-
-# Run the self-extracting installer
-sudo bash arcticfox_installer.sh
-```
-
-This installer extracts the project files and attempts to run the system-wide installation automatically.
+A standalone `arcticfox_installer.sh` is not currently included in this repository or published as a GitHub release. Use **Method 1 (Git clone)** or **Method 2 (Download ZIP)** instead. Do not run `sudo bash arcticfox_installer.sh` unless you have obtained that separate file from a trusted, verified source.
 
 ## 🎯 Usage
 
