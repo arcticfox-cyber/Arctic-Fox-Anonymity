@@ -1,0 +1,23 @@
+name: Shell Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate Bash scripts
+        run: |
+          bash -n Arctic-Fox-Anonymity/arcticfox
+          bash -n Arctic-Fox-Anonymity/install.sh
+          bash -n Arctic-Fox-Anonymity/uninstall.sh
+          bash -n Arctic-Fox-Anonymity/fix_arcticfox.sh
