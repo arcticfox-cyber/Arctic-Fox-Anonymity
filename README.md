@@ -49,8 +49,8 @@ sudo apt install git -y
 # Clone the repository
 git clone https://github.com/arcticfox-cyber/Arctic-Fox-Anonymity.git
 
-# Enter the project directory
-cd Arctic-Fox-Anonymity
+# Enter the actual project directory (the source is in a nested folder)
+cd Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
 
 # Run the installer
 sudo bash install.sh
@@ -67,7 +67,7 @@ The installer installs the required dependencies, including Tor, curl and iptabl
 4. Open a terminal in the extracted folder.
 
 ```bash
-cd ~/Downloads/Arctic-Fox-Anonymity
+cd ~/Downloads/Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
 
 # Install
 sudo bash install.sh
@@ -164,7 +164,7 @@ If necessary, open a new terminal.
 If another program named `arcticfox` is running instead:
 
 ```bash
-cd Arctic-Fox-Anonymity
+cd Arctic-Fox-Anonymity/Arctic-Fox-Anonymity
 sudo bash fix_arcticfox.sh
 ```
 
@@ -199,12 +199,13 @@ To download the latest repository version:
 ```bash
 cd Arctic-Fox-Anonymity
 git pull origin main
+cd Arctic-Fox-Anonymity
 sudo bash install.sh
 ```
 
 ## 🗑️ Uninstallation
 
-Run the following command from the project directory:
+Run the following command from the actual project directory (`Arctic-Fox-Anonymity/Arctic-Fox-Anonymity`):
 
 ```bash
 sudo bash uninstall.sh
@@ -230,19 +231,18 @@ sudo apt purge tor
 ## 📁 Project Structure
 
 ```text
-Arctic-Fox-Anonymity/
-│
-├── arcticfox
-├── install.sh
-├── uninstall.sh
-├── fix_arcticfox.sh
-├── README.md
-├── logo.png
-├── LICENSE
-├── checksums.txt
-│
-└── completions/
-    └── arcticfox
+Arctic-Fox-Anonymity/                 # repository root
+└── Arctic-Fox-Anonymity/              # actual installable project
+    ├── arcticfox
+    ├── install.sh
+    ├── uninstall.sh
+    ├── fix_arcticfox.sh
+    ├── README.md
+    ├── logo.png
+    ├── LICENSE
+    ├── checksums.txt
+    └── completions/
+        └── arcticfox
 ```
 
 ## 🤝 Contributing
