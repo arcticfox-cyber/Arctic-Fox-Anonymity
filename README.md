@@ -234,14 +234,13 @@ Arctic-Fox-Anonymity/                 # repository root
         └── arcticfox
 ```
 
-## 🤝 Contributing
+## 🔐 Licensing & Contributions
 
-Contributions, bug reports, feature requests and improvements are welcome.
+This project is proprietary for versions and distributions published from the licensing-change commit onward. Viewing and personal evaluation are permitted; copying, modifying, redistributing, or submitting derivative versions requires prior written permission. Unsolicited code contributions and pull requests are not accepted.
 
-1. Fork this repository.
-2. Create a feature branch.
-3. Commit your changes.
-4. Open a Pull Request.
+**Historical MIT notice:** Copies and releases distributed before the licensing-change commit were published under MIT. Permissions already granted for those historical copies remain applicable to those copies. This change applies to future versions and distributions only.
+
+See [LICENSE](LICENSE) and [BRAND-AND-ARTWORK.md](BRAND-AND-ARTWORK.md).
 
 ## ⭐ Support
 
